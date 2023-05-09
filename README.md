@@ -1,17 +1,58 @@
-## My Project
+# UiPath RPA Bot Setup using CloudFormation
 
-TODO: Fill this README out!
 
-Be sure to:
+## Deployment Steps
 
-* Change the title in this README
-* Edit your repository description on GitHub
+**Download UiPath file and upload in S3 bucket**
+- Download UiPath msi file from the [location](https://download.uipath.com/UiPathStudioCommunity.msi)
+- Upload the UiPath msi file into Amazon S3 bucket as per the [documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)
+- Update the bucket name and file key in cloudformation template ec2-image-builder.yaml in the user data [line number 310](https://gitlab.aws.dev/aws-engagements/rpa-bots-migration/-/blob/test-may9/ec2-image-builder.yml#L310).
 
-## Security
+**Deploy EC2 Image Builder Pipeline**
+- Clone / download, EC2 image pipeline CloudFormation template from this [repository](https://gitlab.aws.dev/aws-engagements/rpa-bots-migration/-/edit/test-may9)
+- Login to [AWS Console](https://aws.amazon.com/console/)
+- Navigate to [CloudFormation console](https://aws.amazon.com/console/).
+- Create stack as per this [documentation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-console-create-stack.html) .
+- Monitor stack events
 
-See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
+**Deploy CloudFormation Macros**
+- Clone or download the [repository](https://github.com/aws-cloudformation/aws-cloudformation-macros).
+- Navigate to Count folder.
+- You will need a S3 bucket to store the CloudFormation artifacts:
+- If you don't have one already, create one with `aws s3 mb s3://<bucket name>`
+- Package the Macro CloudFormation template. The provided template uses the AWS Serverless Application Model so must be transformed before you can deploy it.
 
-## License
+```
+    aws cloudformation package \
+    --template-file template.yaml \
+    --s3-bucket <your bucket name here> \
+    --output-template-file packaged.yaml
+```
 
-This library is licensed under the MIT-0 License. See the LICENSE file.
+For example: 
+    `aws cloudformation package --template-file template.yaml --s3-bucket count-macro-ec2 --output-template-file packaged.yaml`
+ Deploy the packaged CloudFormation template to a CloudFormation stack:
+
+```
+    aws cloudformation deploy \
+    --stack-name Count-macro \
+    --template-file packaged.yaml \
+    --capabilities CAPABILITY_IAM
+```
+
+To test out the macro's capabilities, try launching the provided example template:
+
+```
+    aws cloudformation deploy \
+    --stack-name Count-test \
+    --template-file test.yaml \
+    --capabilities CAPABILITY_IAM
+```
+**Deploy EC2 Provisioning CloudFormation**
+
+- Clone / download, EC2 Provisioning CloudFormation template (ec2-provisioning.yaml) from this [repository](https://github.com/aws-cloudformation/aws-cloudformation-macros)..
+- Login to AWS Console
+- Navigate to CloudFormation console.
+- Create stack as per this [documentation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/cfn-console-create-stack.html)
+- Monitor stack events.
 

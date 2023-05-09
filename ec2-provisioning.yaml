@@ -1,0 +1,412 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: Count
+Metadata:
+  License: Apache-2.0
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "EC2 Settings"
+        Parameters:
+          - ImageId
+          - KeyName
+          - Instancescount
+          - InstanceType
+          - Securitygroupids
+          - SubnetId
+          - IamInstanceProfile
+          - TopicName
+          - Endpoint
+          - ExecutionRoleArn
+      - Label:
+          default: "Tags Settings"
+        Parameters:
+          - InstanceName
+          - Function
+          - CrisisPatchWindow
+          - MonthlyPatchWindow
+          - Environment
+Parameters :
+  KeyName:
+    Description: Select EC2 key pair of the infrastructure configuration.
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: "must be the name of an existing EC2 KeyPair"
+
+  ImageId: 
+    Type: AWS::EC2::Image::Id
+    Description: >-
+      Enter Base Image for Golden AMI. Ex ami-0ff8a91507f77f867. ***Note that the AWS CloudFormation console doesn't show a drop-down list of values for this parameter type.
+
+  Securitygroupids:
+    Description: Enter Security Group Id.
+    Type: List<AWS::EC2::SecurityGroup::Id>
+
+  TopicName:
+    Type: String
+    Description: Enter SNS Topic Name
+    Default: ec2-alarm-sns-topic
+
+  Endpoint:
+    Type: String
+    Description: Enter Topic Endpoint
+
+  Instancescount:
+    Description: "Number of instances to place on first availablity zone"
+    Type: Number
+    Default: 2
+
+  IamInstanceProfile:
+    Description: "Instance Profile Role"
+    Type: String
+    Default: EC2Execution
+
+  ExecutionRoleArn:
+    Description: "Data Lifecycl Manager Execution Role ARN"
+    Type: String
+    Default: arn:aws:iam::XXX:role/service-role/AWSDataLifecycleManagerDefaultRole
+
+  SubnetId:
+    Description: "The ID of the subnet to place first set of the instance"
+    Type: AWS::EC2::Subnet::Id
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t3.small
+    AllowedValues: [t2.nano, t2.micro, t2.small, t2.medium, t2.large, t2.xlarge, t2.2xlarge,
+      t3.nano, t3.micro, t3.small, t3.medium, t3.large, t3.xlarge]
+    ConstraintDescription: must be a valid EC2 instance type.
+
+  InstanceName:
+    Description: EC2 instance Name
+    Type: String
+    Default: RPABOT1
+    AllowedValues: 
+      [
+        RPABOT1,
+        RPABOT2,
+        RPABOT3,
+      ]
+
+    ConstraintDescription: must be a valid EC2 instance name
+
+  Function:
+    Description: Function
+    Type: String
+    Default: MD
+    AllowedValues: [HR, CS, CO, MD, LE, SC]
+
+  Environment:
+    Description: Environment
+    Type: String
+    Default: DEV
+    AllowedValues: [DEV, STAGE, PROD]
+
+Resources:
+
+  # Reference - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html
+  # Reference - https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/concepts.html
+  # Reference - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-instance.html
+  # Reference - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-network-iface-embedded.html
+  # Reference - https://aws.amazon.com/blogs/mt/use-aws-cloudformation-macros-to-create-multiple-resources-from-a-single-resource-definition  -- for coun
+
+  Ec2Instance:
+    Type: AWS::EC2::Instance
+    Count: !Ref Instancescount
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      PropagateTagsToVolumeOnCreation: true
+      DisableApiTermination: true
+      BlockDeviceMappings: 
+      - DeviceName: "/dev/sda1"
+        Ebs: 
+            DeleteOnTermination: true
+            VolumeType: "gp2"
+            VolumeSize: 150
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: "false"
+          DeviceIndex: "0"
+          GroupSet: !Ref Securitygroupids
+          SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref IamInstanceProfile
+      Tags:
+        - Key: "Name"
+          Value: !Join [ "-", [ !Ref InstanceName, "%d" ] ]   ##parameter  and name of ec2 instance
+        - Key: "Function"
+          Value: !Ref Function
+        - Key: "CrisisPatchWindow"
+          Value: !Ref CrisisPatchWindow
+        - Key: "MonthlyPatchWindow"
+          Value: !Ref MonthlyPatchWindow
+        - Key: "Environment"
+          Value: !Ref Environment
+      UserData: 
+        Fn::Base64: 
+          !Sub |
+            <powershell>
+            Write-Host "Discovering instance identity from meta-data web service"
+            $InstanceId = (Invoke-RestMethod 'http://169.254.169.254/latest/meta-data/instance-id').ToString()
+            $AvailabilityZone = (Invoke-RestMethod 'http://169.254.169.254/latest/meta-data/placement/availability-zone').ToString()
+            $Region = $AvailabilityZone.Substring(0,$AvailabilityZone.Length-1)
+            Write-Host "Getting Tags for the instance"
+            $Tags = Get-EC2Tag -Filters @{Name='resource-id';Value=$InstanceId} -Region $Region
+            $InstanceName = ($Tags | Where-Object {$_.Key -eq 'Name'}).Value
+            Write-Host "`tFound Instance Name: $InstanceName"
+            Write-Host "`tFound Instance Owner: $InstanceOwner"
+            $hostname = hostname
+            Rename-Computer -NewName "$InstanceName" -Restart
+            Restart-Computer
+
+            Install-WindowsFeature -Name "RSAT-AD-PowerShell" -IncludeAllSubFeature
+            Get-Module -Name ActiveDirectory -ListAvailable
+            Import-Module -Name ActiveDirectory
+            $domainJoinUserName = (Get-SSMParameterValue -Name domainJoinUser).Parameters[0].Value
+            $domainJoinPassword = (Get-SSMParameterValue -Name domainJoinPassword -WithDecryption $True).Parameters[0].Value | ConvertTo-SecureString -AsPlainText -Force
+            set-DnsClientServerAddress -InterfaceIndex 7 -ServerAddresses ("172.31.6.66","172.31.68.202")
+            Add-Computer -DomainName corp.example.com -Credential $domainCredential -Restart
+            </powershell>
+            <persist>true</persist>
+  EC2Dashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Join [ '', [ 'Monitoring-', !Ref "AWS::StackName" ] ]
+      DashboardBody:
+        !Sub |
+          {
+              "widgets": [
+                  {
+                      "height": 15,
+                      "width": 24,
+                      "y": 0,
+                      "x": 0,
+                      "type": "explorer",
+                      "properties": {
+                          "metrics": [
+                              {
+                                  "metricName": "CPUUtilization",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                                                            {
+                                  "metricName": "DiskUtilization",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                                                            {
+                                  "metricName": "MemoryUtilization",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "DiskReadBytes",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "DiskReadOps",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "DiskWriteBytes",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "DiskWriteOps",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "NetworkIn",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "NetworkOut",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "NetworkPacketsIn",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "NetworkPacketsOut",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Average"
+                              },
+                              {
+                                  "metricName": "StatusCheckFailed",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Sum"
+                              },
+                              {
+                                  "metricName": "StatusCheckFailed_Instance",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Sum"
+                              },
+                              {
+                                  "metricName": "StatusCheckFailed_System",
+                                  "resourceType": "AWS::EC2::Instance",
+                                  "stat": "Sum"
+                              }
+                          ],
+                          "labels": [
+                              {
+                                  "key": "aws:cloudformation:stack-id",
+                                  "value": "${AWS::StackId}"
+                              }
+                          ],
+                          "widgetOptions": {
+                              "legend": {
+                                  "position": "bottom"
+                              },
+                              "view": "timeSeries",
+                              "stacked": false,
+                              "rowsPerPage": 50,
+                              "widgetsPerRow": 2
+                          },
+                          "period": 300,
+                          "splitBy": "",
+                          "region": "${AWS::Region}" 
+                      }
+                  }
+                ]
+          }
+
+  # SNS Topic for notification alerts from EC2 
+  SNSTopicEc2:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: "alias/aws/sns"
+      Subscription:
+        - Endpoint: !Ref Endpoint
+          Protocol: "email"
+      TopicName: !Ref TopicName
+
+  EventsRule:
+    Type: 'AWS::Events::Rule'
+    Count: !Ref Instancescount
+    Properties:
+      Description: Events Rule For EC2
+      EventPattern:
+        source:
+          - aws.ec2
+        detail-type:
+          - EC2 Instance State-change Notification
+        detail:
+          instance-id: 
+          - !Ref Ec2Instance%d
+      State: ENABLED
+      Targets: 
+        - Arn: !Ref SNSTopicEc2
+          Id: cwatch-topic
+
+  CPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Count: !Ref Instancescount
+    Properties:
+      AlarmDescription: CPU alarm for EC2 instance
+      AlarmActions: 
+      - !Ref SNSTopicEc2
+      MetricName: CPUUtilization
+      Namespace: AWS/EC2
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '2'
+      Threshold: '90'
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref Ec2Instance%d
+
+  MemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Count: !Ref Instancescount
+    Properties:
+      AlarmDescription: "Over 90 percentage of Memory Bytes In Use"
+      AlarmActions:
+      - !Ref SNSTopicEc2
+      MetricName: "MemoryUtilization"
+      Namespace: CWAgent
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '90'
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref Ec2Instance%d
+      - Name: objectname
+        Value: Memory
+
+  DiskSpaceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Count: !Ref Instancescount
+    Properties:
+      AlarmDescription: "Over 80 percentage of volume space is in use"
+      AlarmActions:
+      - !Ref SNSTopicEc2
+      MetricName: "DiskUtilization"
+      Namespace: CWAgent
+      Statistic: Average
+      Period: '60'
+      EvaluationPeriods: '1'
+      Threshold: '20'
+      ComparisonOperator: LessThanOrEqualToThreshold
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref Ec2Instance%d
+      - Name: instance
+        Value: "C:"
+      - Name: objectname
+        Value: LogicalDisk
+        
+  InstanceStatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Count: !Ref Instancescount
+    Properties:
+      AlarmDescription: Instance Status Check Failed
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_Instance
+      Statistic: Minimum
+      Period: '60'
+      EvaluationPeriods: '3'
+      ComparisonOperator: GreaterThanThreshold
+      Threshold: '0'
+      AlarmActions:
+      - !Ref SNSTopicEc2
+      Dimensions:
+      - Name: InstanceId
+        Value: !Ref Ec2Instance%d 
+  
+  LifecyclePolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties: 
+      Description: Lifecycle Policy for snapshot cleanup
+      State: ENABLED
+      ExecutionRoleArn: !Ref ExecutionRoleArn
+      PolicyDetails:
+        ResourceTypes:
+        - VOLUME
+        TargetTags:
+        - Key: Environment
+          Value: !Ref Environment
+        Schedules:
+        - Name: Daily Snapshots Cleanup
+          TagsToAdd:
+          - Key: type
+            Value: DailySnapshot
+          CreateRule:
+            Interval: 24
+            IntervalUnit: HOURS
+            Times:
+            - '01:45'
+          RetainRule:
+            Count: 0
+            Interval: 1
+            IntervalUnit: DAYS
+          CopyTags: true
