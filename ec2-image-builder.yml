@@ -1,0 +1,393 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudFormation Stack to build UiPath RPA bot golden AMI."
+
+# For better user experience, categorized the input parameters
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "AMI Settings"
+        Parameters:
+          - ParentImage
+          - InstanceTypes
+          - SubnetId
+          - SecurityGroupIds
+          - KeyPair
+          - TopicName
+          - Endpoint
+          - SsmParameterStoreName
+          - KmsKeyId
+      - Label:
+          default: "Pipeline Settings"
+        Parameters:
+          - ImageBuilderPipelineName
+          - Ec2BuilderInstanceProfileName
+          - Ec2ImageInfraConfigurationName
+          - Ec2ImageComponentName
+          - Ec2ImageRecipeName
+          - Ec2DistributionConfigurationName
+      - Label:
+          default: "Versions Settings"
+        Parameters:
+          - ComponentVersion
+          - RecipeVersion
+      - Label:
+          default: "Tags Settings"
+        Parameters:
+          - Name
+          - Function
+          - Environment
+
+# Setting up Input Parameters
+Parameters:
+  InstanceTypes:
+    Description: Select Instance type.
+    Default: t3.xlarge
+    Type: String
+    AllowedValues: #Add/edit allowed values
+      - "t3.xlarge"
+      - "t3.large"
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Select Subnet ID.
+    Default: subnet-0e5cba9bc6462dfe5
+  SecurityGroupIds:
+    Type: List<AWS::EC2::SecurityGroup::Id>
+    Description: Enter Security Group Ids.
+  KeyPair:
+    Description: Select EC2 key pair of the infrastructure configuration.
+    Type: AWS::EC2::KeyPair::KeyName
+  ImageBuilderPipelineName:
+    Type: String
+    Description: Enter Image Builder Pipeline Name
+    Default: dev-image-builder-pipeline
+  TopicName:
+    Type: String
+    Description: Enter SNS Topic Name
+    Default: ec2-image-builder-sns-topic
+  Ec2DistributionConfigurationName:
+    Type: String
+    Description: Enter Ec2 Distribution Configuration
+    Default: DevEc2DistributionConfiguration
+  Ec2ImageRecipeName:
+    Type: String
+    Description: Enter Ec2 Image Recipe
+    Default: DevEc2ImageRecipe
+  Ec2ImageComponentName:
+    Type: String
+    Description: Enter Ec2 Image Component
+    Default: DevEc2ImageComponent
+  Ec2ImageInfraConfigurationName:
+    Type: String
+    Description: Enter Ec2 Image Infra Configuration Name
+    Default: DevEc2ImageInfraConfiguration
+  Ec2BuilderInstanceProfileName:
+    Type: String
+    Description: Enter Ec2 Builder Instance Profile
+    Default: DevEc2BuilderInstanceProfile
+  Endpoint:
+    Type: String
+    Description: Enter Topic Endpoint
+    Default: abc@xyz.com
+  ParentImage:
+    Type: AWS::EC2::Image::Id
+    Description: >-
+      Enter Base Image for Golden AMI. Ex ami-0ff8a91507f77f867. ***Note that the AWS CloudFormation console doesn't show a drop-down list of values for this parameter type.
+  SsmParameterStoreName:
+    Type: String
+    Description: Enter SSM Parameter Store Name to save AMI ID
+    Default: /dev/images
+  KmsKeyId:
+    Type: String
+    Description: Enter customer managed KMS Key
+  Name:
+    Description: Select Name tag.
+    Type: String
+    Default: RPABOT
+    AllowedValues:
+      [
+        RPABOT1,
+        RPABOT2,
+        RPABOT3,
+      ]
+  Function:
+    Description: Select Function tag.
+    Type: String
+    Default: MD
+    AllowedValues: [HR, CS, CO, MD, LE, SC]
+  Environment:
+    Description: Select Environment tag
+    Type: String
+    Default: DEV
+    AllowedValues: [DEV, STAGE, PROD]
+  ComponentVersion:
+    Description: Enter Component Version in the format - major.minor.patch
+    Type: String
+    Default: 1.0.0
+  RecipeVersion:
+    Description: Enter Recipe Version in the format - major.minor.patch
+    Type: String
+    Default: 1.0.0
+
+Resources:
+  # By default, AWS Services do not have permission to perform actions on EC2 instances.
+
+  # Below role grants required permissions of AWS SSM and EC2 Image Builder to build an EC2 image.
+
+  # Reference - https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html
+
+  # Reference - https://docs.aws.amazon.com/imagebuilder/latest/userguide/image-builder-setting-up.html
+
+  # Creating EC2 Instance Role
+  Ec2ImageInstanceRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      Comment: Role to be used by EC2 instance during image build.
+    Properties:
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/EC2InstanceProfileForImageBuilder
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonS3FullAccess
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - !Sub "ec2.${AWS::URLSuffix}"
+        Version: "2012-10-17"
+      Path: /executionServiceEC2Role/
+      # By default CloudWatch Logs is turned on. The instance logs are removed from the instance before image creation.
+      # Reference - https://docs.aws.amazon.com/imagebuilder/latest/userguide/integ-cwlogs.html
+      # For retaintion and troubleshooting,create s3 bucket where Image Builder uploads logs
+      # Reference - https://docs.amazonaws.cn/en_us/AWSCloudFormation/latest/UserGuide/aws-properties-imagebuilder-infrastructureconfiguration-logging.html
+
+  # S3 bucket for Image Builder Logs
+  Ec2ImageBuilderLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # If you want to delete the stack, but want to keep the bucket, set the DelectionPolicy to Retain.
+      # DeletionPolicy: Retain
+      # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-attribute-deletionpolicy.html
+      # BucketName: !Join [ '-', [ !Ref "AWS::StackName", !Ref "AWS::Region" ] ]
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+        # IAM policy to allow EC2 instance to put in S3 bucket using instance profile/role
+        # Reference -  https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-policy.html
+      AccessControl: Private
+      LifecycleConfiguration:
+        Rules:
+          - Id: LogRetentionRule
+            Prefix: imagebuilder-bucket-prefix/
+            Status: Enabled
+            ExpirationInDays: 30
+
+# S3 bucket policy
+  Ec2ImageBuilderLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref Ec2ImageBuilderLogBucket
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Action:
+              - 's3:GetObject'
+            Effect: Deny
+            Resource: !Join
+              - ''
+              - - 'arn:aws:s3:::'
+                - !Ref Ec2ImageBuilderLogBucket
+                - /*
+            Principal: '*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # Logging Policy for EC2 Instance Role
+  Ec2InstanceRoleLoggingPolicy:
+    Type: AWS::IAM::Policy
+    Metadata:
+      Comment: Allow EC2 to put log files to s3 bucket
+    Properties:
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Action:
+              - s3:PutObject
+            Effect: Allow
+            Resource:
+              - !Sub
+                - arn:${AWS::Partition}:s3:::${BUCKET}/*
+                - BUCKET:
+                    Ref: Ec2ImageBuilderLogBucket
+      PolicyName: Ec2ImageBuilderLogBucketPolicy
+      Roles:
+        - !Ref Ec2ImageInstanceRole
+
+  # EC2 Instance Profile
+  Ec2BuilderInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Ref Ec2BuilderInstanceProfileName
+      Roles:
+        - !Ref Ec2ImageInstanceRole
+      Path: /executionServiceEC2Role/
+
+  # SNS Topic for notification alerts from EC2 Image Builder
+  SNSTopicEc2ImageBuilder:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: "alias/aws/sns"
+      Subscription:
+        - Endpoint: !Ref Endpoint
+          Protocol: "email"
+      TopicName: !Join [ '', [ !Ref TopicName, !Ref "AWS::StackName" ] ]
+
+  # Infrastructure configuration allows to specify the infrastructure within which to build and test image
+  Ec2ImageInfraConfiguration:
+    Type: AWS::ImageBuilder::InfrastructureConfiguration
+    Properties:
+      Name: !Ref Ec2ImageInfraConfigurationName
+      Description: Infrastructure Configuration for Image Builder
+      InstanceProfileName:
+        Ref: Ec2BuilderInstanceProfile
+      # Save EC2 logs to s3 bucket
+      Logging:
+        S3Logs:
+          S3BucketName:
+            Ref: Ec2ImageBuilderLogBucket
+          S3KeyPrefix: "imagebuilder-bucket-prefix"
+      InstanceTypes:
+        - !Ref InstanceTypes
+      KeyPair: !Ref KeyPair
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds: !Ref SecurityGroupIds
+      SnsTopicArn: !Ref SNSTopicEc2ImageBuilder
+      TerminateInstanceOnFailure: false
+      ResourceTags:
+        "Function" : !Ref Function
+        "Environment": !Ref Environment
+
+    # Sample example to create custom EC2 Image Builder component
+    # Build stpes will run after the install but before the image capture
+    # Validate phase to run after the install but before the image captures
+  Ec2ImageComponent:
+    Type: AWS::ImageBuilder::Component
+    Properties:
+      Name: !Ref Ec2ImageComponentName
+      Version: !Ref ComponentVersion
+      Description: Install Visual Studio Code
+      ChangeDescription: First version
+      Platform: Windows
+      Data: |
+        name: InstallVSCode
+        description: Downloads and Installs Visual Studio Code
+        schemaVersion: 1.0
+        phases:
+          - name: build
+            steps:
+              - name: Create_Working_Directory
+                action: CreateFolder
+                onFailure: Abort
+                inputs:
+                  - path: 'C:\inspec_test'
+              - name: Download_InSpec_Installer
+                action: S3Download
+                timeoutSeconds: 60
+                onFailure: Abort
+                maxAttempts: 1
+                inputs:
+                  - source: 's3://tam-rev-bucket/UiPathStudioCommunity.msi'
+                    destination: 'C:\inspec_test\UiPathStudioCommunity.msi'
+              - name: Install_InSpec
+                action: ExecutePowerShell
+                onFailure: Abort
+                inputs:
+                  commands:
+                    - |
+                      $ErrorActionPreference = 'Stop'
+                      $ProgressPreference = 'SilentlyContinue'
+                      Start-Process C:\inspec_test\UiPathStudioCommunity.msi -Wait -ArgumentList 'ADDLOCAL=DesktopFeature,Studio,Robot,RegisterService,Packages APPLICATIONFOLDER=C:\inspec_test /q'
+      Tags:
+        "Name": !Ref Name
+        "Function" : !Ref Function
+        "Environment": !Ref Environment
+
+
+  # Recipe to apply components on base image to produce golden image
+  Ec2ImageRecipe:
+    Type: AWS::ImageBuilder::ImageRecipe
+    Properties:
+      Name: Ec2ImageRecipeName
+      Description: Image recipe of VS Code installation on Windows 2019 server
+      Version: !Ref RecipeVersion
+      ParentImage: !Ref ParentImage
+      Components:
+        - ComponentArn:
+            Ref: Ec2ImageComponent
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            KmsKeyId: !Ref KmsKeyId
+            VolumeType: "gp2"
+            VolumeSize: 100
+      Tags:
+        "Name": !Ref Name
+        "Function" : !Ref Function
+        "Environment": !Ref Environment
+
+  # Building EC2 Image (AMI)
+  Ec2Ami:
+    Type: AWS::ImageBuilder::Image
+    Properties:
+      ImageRecipeArn:
+        Ref: Ec2ImageRecipe
+      InfrastructureConfigurationArn:
+        Ref: Ec2ImageInfraConfiguration
+      Tags:
+        "Name": !Ref Name
+        "Function" : !Ref Function
+        "Environment": !Ref Environment
+
+  # Storing Image / AMI ID into SSM Parameter Store
+  SSMParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Ref SsmParameterStoreName
+      Description: SSM Parameter for Golden EC2 Image
+      Type: String
+      Value:
+        Fn::GetAtt: [Ec2Ami, ImageId]
+      Tags:
+        "Name": !Ref Name
+        "Function" : !Ref Function
+        "Environment": !Ref Environment
+
+  # Image Builder pipeline Resources
+  ImagePipelineAllParameters:
+    Type: "AWS::ImageBuilder::ImagePipeline"
+    Properties:
+      Name: !Ref ImageBuilderPipelineName
+      Description: "AMI Pipeline for bot EC2"
+      ImageRecipeArn: !Ref Ec2ImageRecipe
+      InfrastructureConfigurationArn: !Ref Ec2ImageInfraConfiguration
+      ImageTestsConfiguration:
+        ImageTestsEnabled: false
+        TimeoutMinutes: 90
+      Status: "ENABLED"
+      Tags:
+        "Name": !Ref Name
+        "Function" : !Ref Function
+        "Environment": !Ref Environment
