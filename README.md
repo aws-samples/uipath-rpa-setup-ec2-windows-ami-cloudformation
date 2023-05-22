@@ -1,4 +1,8 @@
-# UiPath RPA Bot Setup using CloudFormation
+# Set up UiPath RPA bots on Amazon EC2 by using AWS CloudFormation
+
+This solution explains how you can deploy robotic process automation (RPA) bots on [Amazon Elastic Compute Cloud](https://aws.amazon.com/pm/ec2/?trk=32f4fbd0-ffda-4695-a60c-8857fab7d0dd&sc_channel=ps&ef_id=CjwKCAjwgqejBhBAEiwAuWHioN0OQUGUkK4mFr8XbXgLXsXTL6znKF2E3A51kYHzpibijLi0CP3oTRoCV9UQAvD_BwE:G:s&s_kwcid=AL!4422!3!476942909971!e!!g!!amazon%20ec2!11539707735!118057053088_) (Amazon EC2) instances. It uses an [EC2 Image Builder](https://docs.aws.amazon.com/imagebuilder/latest/userguide/what-is-image-builder.html) pipeline to create a custom [Amazon Machine Image](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/AMIs.html) (AMI). An AMI is a preconfigured virtual machine (VM) image that contains the operating system (OS) and preinstalled software to deploy EC2 instances. This pattern uses [AWS CloudFormation](https://aws.amazon.com/cloudformation/) templates to install UiPath Studio Community edition on the custom AMI. UiPath is an RPA tool that helps you set up robots to automate your tasks.
+
+As part of this solution, EC2 Windows instances are launched by using the base AMI, and the UiPath Studio application is installed on the instances. The pattern uses the Microsoft System Preparation (Sysprep) tool to duplicate the customized Windows installation. After that, it removes the host information and creates a final AMI from the instance. You can then launch the instances on demand by using the final AMI with your own naming conventions and monitoring setup.
 
 ## Target Architecture
 
