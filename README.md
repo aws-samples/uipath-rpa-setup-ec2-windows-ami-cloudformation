@@ -10,6 +10,8 @@ As part of this solution, EC2 Windows instances are launched by using the base A
 
 ## Deployment Steps
 
+Check out this APG Pattern for detailed deployment instructions: [Set up UiPath RPA bots automatically on Amazon EC2 by using AWS CloudFormation](https://docs.aws.amazon.com/prescriptive-guidance/latest/patterns/set-up-uipath-rpa-bots-automatically-on-amazon-ec2-by-using-aws-cloudformation.html) 
+
 **Download UiPath file and upload in S3 bucket**
 - Download UiPath msi file from the [location](https://download.uipath.com/UiPathStudioCommunity.msi)
 - Upload the UiPath msi file into Amazon S3 bucket as per the [documentation](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html)
